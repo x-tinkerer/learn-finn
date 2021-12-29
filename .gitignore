@@ -1,5 +1,7 @@
 .vscode
 */build/
+*/release/
 *.onnx
 *.pth
-*/output*
+*/__pycache__/
+*/output*/
