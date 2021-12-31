@@ -34,13 +34,15 @@ import shutil
 
 # custom steps for mobilenetv1
 from custom_steps import (
-    step_mobilenet_tidy,
-    step_mobilenet_streamline,
+    step_demo_tidy,
+    step_demo_streamline,
     step_mobilenet_convert_to_hls_layers,
     step_mobilenet_convert_to_hls_layers_separate_th,
     step_mobilenet_lower_convs,
     step_mobilenet_slr_floorplan,
 )
+
+os.environ["FINN_BUILD_DIR"]="./build"
 
 model_name = "starter_qnn-ready"
 
@@ -73,9 +75,10 @@ def select_clk_period(platform):
 def select_build_steps(platform):
     if platform in zynq_platforms:
         return [
-            step_mobilenet_tidy,
-            step_mobilenet_streamline,
+            step_demo_tidy,
+            step_demo_streamline,
             step_mobilenet_lower_convs,
+            step_mobilenet_convert_to_hls_layers,
             step_mobilenet_convert_to_hls_layers_separate_th,
             "step_create_dataflow_partition",
             "step_apply_folding_config",
@@ -90,7 +93,7 @@ def select_build_steps(platform):
         ]
     elif platform in alveo_platforms:
         return [
-            step_mobilenet_streamline,
+            step_demo_streamline,
             step_mobilenet_lower_convs,
             step_mobilenet_convert_to_hls_layers,
             "step_create_dataflow_partition",
@@ -144,7 +147,7 @@ for platform_name in platforms_to_build:
             build_cfg.DataflowOutputType.DEPLOYMENT_PACKAGE,
         ],
     )
-    model_file = "./models/%s.onnx" % model_name
+    model_file = "models/%s.onnx" % model_name
     build.build_dataflow_cfg(model_file, cfg)
 
     # copy bitfiles and runtime weights into release dir if found

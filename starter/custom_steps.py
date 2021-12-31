@@ -30,45 +30,44 @@ from finn.builder.build_dataflow_config import (
     DataflowBuildConfig,
     ShellFlowType,
 )
+
+from finn.transformation.fold_constants import FoldConstants
 from finn.transformation.streamline import Streamline
-from finn.transformation.streamline.reorder import MakeMaxPoolNHWC
 from finn.transformation.double_to_single_float import DoubleToSingleFloat
 import finn.transformation.streamline.absorb as absorb
 import finn.transformation.streamline.reorder as reorder
 from finn.transformation.infer_data_layouts import InferDataLayouts
-from finn.transformation.fold_constants import FoldConstants
 from finn.transformation.streamline.collapse_repeated import CollapseRepeatedMul
 from finn.transformation.remove import RemoveIdentityOps
 from finn.transformation.streamline.round_thresholds import RoundAndClipThresholds
 from finn.transformation.lower_convs_to_matmul import LowerConvsToMatMul
 from finn.transformation.general import (
+    ConvertSubToAdd,
+    ConvertDivToMul,
     GiveReadableTensorNames,
     GiveUniqueNodeNames,
-    GiveUniqueParameterTensors,
+    SortGraph,
     RemoveUnusedTensors,
+    GiveUniqueParameterTensors,
+    RemoveStaticGraphInputs,
+    ApplyConfig,
 )
 import finn.transformation.fpgadataflow.convert_to_hls_layers as to_hls
 from finn.transformation.infer_shapes import InferShapes
 from finn.transformation.change_datalayout import ChangeDataLayoutQuantAvgPool2d
-from finn.transformation.infer_data_layouts import InferDataLayouts
 from finn.transformation.infer_datatypes import InferDataTypes
-from finn.transformation.insert_topk import InsertTopK
 
-
-def step_mobilenet_tidy(model: ModelWrapper, cfg: DataflowBuildConfig):
+def step_demo_tidy(model: ModelWrapper, cfg: DataflowBuildConfig):
+    model = model.transform(GiveUniqueParameterTensors())
     model = model.transform(InferShapes())
     model = model.transform(FoldConstants())
-    model = model.transform(InsertTopK())
-    model = model.transform(absorb.AbsorbScalarMulAddIntoTopK())
-    model = model.transform(InferShapes())
-    model = model.transform(InferDataTypes())
-    model = model.transform(InferDataLayouts())
+    model = model.transform(RemoveStaticGraphInputs())
     model = model.transform(GiveUniqueNodeNames())
-    model = model.transform(GiveUniqueParameterTensors())
     model = model.transform(GiveReadableTensorNames())
+    model = model.transform(InferDataTypes())
     return model
 
-def step_mobilenet_streamline(model: ModelWrapper, cfg: DataflowBuildConfig):
+def step_demo_streamline_linear(model: ModelWrapper, cfg: DataflowBuildConfig):
     model = model.transform(Streamline())
     additional_streamline_transformations = [
         DoubleToSingleFloat(),
@@ -92,12 +91,35 @@ def step_mobilenet_streamline(model: ModelWrapper, cfg: DataflowBuildConfig):
         model = model.transform(InferDataTypes())
     return model
 
+def step_demo_streamline_nonlinear(model: ModelWrapper, cfg: DataflowBuildConfig):
+    streamline_transformations = [
+        reorder.MoveLinearPastEltwiseAdd(),
+        reorder.MoveLinearPastFork(),
+    ]
+    for trn in streamline_transformations:
+        model = model.transform(trn)
+        model = model.transform(GiveUniqueNodeNames())
+    return model
+
+def step_demo_streamline(model: ModelWrapper, cfg: DataflowBuildConfig):
+
+    for iter_id in range(1):
+        model = step_demo_streamline_linear(model, cfg)
+        model = step_demo_streamline_nonlinear(model, cfg)
+
+        # big loop tidy up
+        model = model.transform(RemoveUnusedTensors())
+        model = model.transform(GiveReadableTensorNames())
+        model = model.transform(InferDataTypes())
+        model = model.transform(SortGraph())
+
+    model = model.transform(DoubleToSingleFloat())
+
+    return model
 
 def step_mobilenet_lower_convs(model: ModelWrapper, cfg: DataflowBuildConfig):
     model = model.transform(LowerConvsToMatMul())
-    model = model.transform(MakeMaxPoolNHWC())
     model = model.transform(absorb.AbsorbTransposeIntoMultiThreshold())
-    model = model.transform(MakeMaxPoolNHWC())
     model = model.transform(absorb.AbsorbConsecutiveTransposes())
     model = model.transform(GiveUniqueNodeNames())
     model = model.transform(GiveReadableTensorNames())
@@ -115,6 +137,7 @@ def step_mobilenet_convert_to_hls_layers(model: ModelWrapper, cfg: DataflowBuild
     model = model.transform(to_hls.InferQuantizedStreamingFCLayer(mem_mode))
     model = model.transform(to_hls.InferChannelwiseLinearLayer())
     model = model.transform(to_hls.InferLabelSelectLayer())
+    model = model.transform(to_hls.InferConcatLayer)
     model = model.transform(InferShapes())
     model = model.transform(GiveUniqueNodeNames())
     model = model.transform(GiveReadableTensorNames())

@@ -1,3 +1,4 @@
+from pickle import FALSE
 import torch
 import torch.nn as nn
 import torch.quantization
@@ -50,40 +51,6 @@ class CommonUintActQuant(Uint8ActPerTensorFloatMaxInit):
     max_val = 6.0
     restrict_scaling_type = RestrictValueType.LOG_FP
 
-
-
-FIRST_LAYER_BIT_WIDTH = 8
-
-"""
-class QuantConv1d(QuantWBIOL, Conv1d):
-
-    def __init__(
-            self,
-            in_channels: int,
-            out_channels: int,
-            kernel_size: Union[int, Tuple[int, int]],
-            stride: Union[int, Tuple[int, int]] = 1,
-            padding: Union[int, Tuple[int, int]] = 0,
-            dilation: Union[int, Tuple[int, int]] = 1,
-            groups: int = 1,
-            bias: bool = True,
-            padding_type: str = 'standard',
-            weight_quant: Optional[WeightQuantType] = Int8WeightPerTensorFloat,
-            bias_quant: Optional[BiasQuantType] = None,
-            input_quant: Optional[ActQuantType] = None,
-            output_quant: Optional[ActQuantType] = None,
-            return_quant_tensor: bool = False,
-            **kwargs) -> None:
-"""
-
-
-def depth_conv2d(inp, oup, kernel=1, stride=1, pad=0):
-    return nn.Sequential(
-        qnn.QuantConv2d(inp, inp, kernel_size = kernel, stride = stride, padding=pad, groups=inp, weight_bit_width=8, return_quant_tensor=True),
-        qnn.QuantReLU(bit_width=8, return_quant_tensor=True),
-        qnn.QuantConv2d(inp, oup, kernel_size=1, weight_bit_width=8, return_quant_tensor=True)
-    )
-
 class DwsConvBlock(nn.Module):
     def __init__(
             self,
@@ -94,6 +61,7 @@ class DwsConvBlock(nn.Module):
             pw_activation_scaling_per_channel=False):
         super(DwsConvBlock, self).__init__()
         self.dw_conv = ConvBlock(
+            #kernel_size=3, stride=stride, padding=1,
             in_channels=in_channels,
             out_channels=in_channels,
             groups=in_channels,
@@ -103,9 +71,11 @@ class DwsConvBlock(nn.Module):
             weight_bit_width=bit_width,
             act_bit_width=bit_width)
         self.pw_conv = ConvBlock(
+            #kernel_size=1, stride=1, padding=0,
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=1,
+            stride=1,
             padding=0,
             weight_bit_width=bit_width,
             act_bit_width=bit_width,
@@ -118,7 +88,6 @@ class DwsConvBlock(nn.Module):
 
 
 class ConvBlock(nn.Module):
-
     def __init__(
             self,
             in_channels,
@@ -159,29 +128,26 @@ class ConvBlock(nn.Module):
 """
 TODO:
 pw_activation_scaling_per_channel=True?
-
 AssertionError: cycle-free graph violated: partition depends on itself
 """
 class Starter(nn.Module):
     def __init__(self):
         super(Starter, self).__init__()
-        #self.quant_inp = qnn.QuantIdentity(bit_width=8)
+        self.quant_inp = qnn.QuantIdentity(bit_width=8, return_quant_tensor=True)
+
+        self.stage1 = nn.Sequential()
         
-        self.features = nn.Sequential()
-        
+        # in_channels=1, out_channels=8, kernel_size=3, stride=2, padding=1,
         init_block = ConvBlock(
             in_channels=1,
             out_channels=8,
             kernel_size=3,
             stride=2,
-            weight_bit_width=FIRST_LAYER_BIT_WIDTH,
+            padding=1,
+            weight_bit_width=8,
             activation_scaling_per_channel=True,
             act_bit_width=8)
         
-        self.features.add_module('init_block', init_block)
-
-        
-        stage = nn.Sequential()
         #self.conv2 = conv_dw(8, 16, 1)
         conv2 = DwsConvBlock(
                     in_channels=8,
@@ -189,32 +155,27 @@ class Starter(nn.Module):
                     stride=1,
                     bit_width=8,
                     pw_activation_scaling_per_channel=True)
-        
-        #self.conv3 = conv_dw(16, 16, 2)
+        #self.conv4 = conv_dw(16, 16, 2)
         conv3 = DwsConvBlock(
                     in_channels=16,
                     out_channels=16,
                     stride=2,
                     bit_width=8,
                     pw_activation_scaling_per_channel=True)
-        
         #self.conv4 = conv_dw(16, 16, 1)
         conv4 = DwsConvBlock(
                     in_channels=16,
                     out_channels=16,
                     stride=1,
                     bit_width=8,
-                    pw_activation_scaling_per_channel=False)
-        
-        """
+                    pw_activation_scaling_per_channel=True)
         #self.conv5 = conv_dw(16, 32, 2)
         conv5 = DwsConvBlock(
                     in_channels=16,
                     out_channels=32,
                     stride=2,
                     bit_width=8,
-                    pw_activation_scaling_per_channel=False)
-        
+                    pw_activation_scaling_per_channel=True)
         #self.conv6 = conv_dw(32, 32, 1)
         conv6 = DwsConvBlock(
                     in_channels=32,
@@ -235,43 +196,286 @@ class Starter(nn.Module):
                     out_channels=32,
                     stride=1,
                     bit_width=8,
-                    pw_activation_scaling_per_channel=False)
-        """
-
-        stage.add_module('dwconv2', conv2)
-        stage.add_module('dwconv3', conv3)
-        stage.add_module('dwconv4', conv4)
-        #stage.add_module('dwconv5', conv5)
-        #stage.add_module('dwconv6', conv6)
-        #stage.add_module('dwconv7', conv7)
-        #stage.add_module('dwconv8', conv8)
-        self.features.add_module('stage1', stage)
+                    pw_activation_scaling_per_channel=True)
         
-        self.final_pool = QuantAvgPool2d(kernel_size=7, stride=1, bit_width=8)
+        self.stage1.add_module('init_block', init_block)
+        self.stage1.add_module('dwconv2', conv2)
+        self.stage1.add_module('dwconv3', conv3)
+        self.stage1.add_module('dwconv4', conv4)
+        self.stage1.add_module('dwconv5', conv5)
+        self.stage1.add_module('dwconv6', conv6)
+        self.stage1.add_module('dwconv7', conv7)
+        self.stage1.add_module('dwconv8', conv8)
+        
+        #  --- Stage2 ---
+        self.stage2 = nn.Sequential()
+        #self.conv9 = conv_dw(32, 64, 2)
+        quant_inp_2 = qnn.QuantIdentity(bit_width=8, return_quant_tensor=True)
+        conv9 = DwsConvBlock(
+                    in_channels=32,
+                    out_channels=64,
+                    stride=2,
+                    bit_width=8,
+                    pw_activation_scaling_per_channel=True)
+        #self.conv10 = conv_dw(64, 64, 1)
+        conv10 = DwsConvBlock(
+                    in_channels=64,
+                    out_channels=64,
+                    stride=1,
+                    bit_width=8,
+                    pw_activation_scaling_per_channel=True)
+        #self.conv11 = conv_dw(64, 64, 1)
+        conv11 = DwsConvBlock(
+                    in_channels=64,
+                    out_channels=64,
+                    stride=1,
+                    bit_width=8,
+                    pw_activation_scaling_per_channel=True)
+        self.stage2.add_module('quant_inp_2', quant_inp_2)
+        self.stage2.add_module('dwconv9', conv9)
+        self.stage2.add_module('dwconv10', conv10)
+        self.stage2.add_module('dwconv11', conv11)
 
-        self.output = QuantLinear(
-            1600, 10,
-            bias=True,
-            bias_quant=IntBias,
-            weight_quant=CommonIntWeightPerTensorQuant,
+        #  --- Stage3 ---
+        self.stage3 = nn.Sequential()
+        #self.conv12 = conv_dw(64, 128, 2)
+        quant_inp_3 = qnn.QuantIdentity(bit_width=8, return_quant_tensor=True)
+        conv12 = DwsConvBlock(
+                    in_channels=64,
+                    out_channels=128,
+                    stride=2,
+                    bit_width=8,
+                    pw_activation_scaling_per_channel=True)
+        #self.conv13 = conv_dw(128, 128, 1)
+        conv13 = DwsConvBlock(
+                    in_channels=128,
+                    out_channels=128,
+                    stride=1,
+                    bit_width=8,
+                    pw_activation_scaling_per_channel=True)
+        self.stage3.add_module('quant_inp_2', quant_inp_3)
+        self.stage3.add_module('conv12', conv12)
+        self.stage3.add_module('conv13', conv13)
+
+        #  --- Stage4 ---
+        self.stage4 = nn.Sequential()
+        quant_inp_4 = qnn.QuantIdentity(bit_width=8, return_quant_tensor=True)
+        # conv2d(128, 32, 1,)
+        stage4_1 =nn.Sequential(
+            QuantConv2d(
+                in_channels=128,
+                out_channels=32,
+                kernel_size=1,  # kernel_size=1
+                bias=False,
+                weight_quant=CommonIntWeightPerTensorQuant, # --- HEAR ---
+                weight_bit_width=8),
+        )
+        stage4_2 = nn.Sequential(
+            QuantReLU(
+                act_quant=CommonUintActQuant,
+                bit_width=8,
+                per_channel_broadcastable_shape=(1, 32, 1, 1),
+                scaling_per_channel=True,
+                return_quant_tensor=True),
+        )
+        # depth_conv2d(32, 128, kernel=3, stride=2, pad=1)
+        stage4_3 =nn.Sequential(
+            QuantConv2d(
+            in_channels=32,
+            out_channels=32,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            bias=False,
+            weight_quant=CommonIntWeightPerChannelQuant,
             weight_bit_width=8)
+        )
+        stage4_4 = nn.Sequential(
+            QuantReLU(
+            act_quant=CommonUintActQuant,
+            bit_width=8,
+            per_channel_broadcastable_shape=(1, 32, 1, 1),
+            scaling_per_channel=False,
+            return_quant_tensor=True)
+        )
+        stage4_5 = nn.Sequential(QuantConv2d(
+            in_channels=32,
+            out_channels=128,
+            kernel_size=1,
+            bias=False,
+            weight_quant=CommonIntWeightPerChannelQuant,
+            weight_bit_width=8)
+        )
+        stage4_6 = nn.Sequential(QuantReLU(
+            act_quant=CommonUintActQuant,
+            bit_width=8,
+            per_channel_broadcastable_shape=(1, 128, 1, 1),
+            scaling_per_channel=False,
+            return_quant_tensor=True)
+        )
+        self.stage4.add_module('quant_inp_4', quant_inp_4)
+        self.stage4.add_module('stage4_1', stage4_1)
+        self.stage4.add_module('stage4_2', stage4_2)
+        self.stage4.add_module('stage4_3', stage4_3)
+        self.stage4.add_module('stage4_4', stage4_4)
+        self.stage4.add_module('stage4_5', stage4_5)
+        self.stage4.add_module('stage4_6', stage4_6)
+
+        # --- the follow stage is multibox --- 
+        self.loc_layer1 = nn.Sequential(
+        #loc_layers += [depth_conv2d(32, 12, kernel=3, pad=1)]
+            QuantConv2d(
+                in_channels=32,
+                out_channels=32,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                groups=32,
+                bias=False,
+                weight_quant=CommonIntWeightPerChannelQuant,
+                weight_bit_width=8,
+                return_quant_tensor=True),
+            QuantReLU(
+                act_quant=CommonUintActQuant,
+                bit_width=8,
+                per_channel_broadcastable_shape=(1, 32, 1, 1),
+                scaling_per_channel=False,
+                return_quant_tensor=True),
+            QuantConv2d(
+                in_channels=32,
+                out_channels=12,
+                kernel_size=1,
+                bias=False,
+                weight_quant=CommonIntWeightPerChannelQuant,
+                weight_bit_width=8,
+		        return_quant_tensor=True),
+            qnn.QuantIdentity(bit_width=8, return_quant_tensor=True)
+        )
+        
+        #loc_layers += [depth_conv2d(64, 8, kernel=3, pad=1)]
+        self.loc_layer2 = nn.Sequential(
+            QuantConv2d(
+                in_channels=64,
+                out_channels=64,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                groups=64,
+                bias=False,
+		        #input_quant=CommonIntWeightPerTensorQuant,
+                weight_quant=CommonIntWeightPerChannelQuant,
+                weight_bit_width=8,
+                return_quant_tensor=True),
+            QuantReLU(
+                act_quant=CommonUintActQuant,
+                bit_width=8,
+                per_channel_broadcastable_shape=(1, 64, 1, 1),
+                scaling_per_channel=False,
+                return_quant_tensor=True),
+            QuantConv2d(
+                in_channels=64,
+                out_channels=8,
+                kernel_size=1,
+                bias=False,
+                weight_quant=CommonIntWeightPerChannelQuant,
+                weight_bit_width=8,
+		        return_quant_tensor=True),
+            qnn.QuantIdentity(bit_width=8, return_quant_tensor=True)
+	    )
+
+
+        #loc_layers += [depth_conv2d(128, 8, kernel=3, pad=1)]
+        self.loc_layer3 = nn.Sequential(
+            QuantConv2d(
+                in_channels=128,
+                out_channels=128,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                groups=128,
+                bias=False,
+		        #input_quant=CommonIntWeightPerTensorQuant,
+                weight_quant=CommonIntWeightPerChannelQuant,
+                weight_bit_width=8,
+		        return_quant_tensor=True,
+                ),
+            QuantReLU(
+                act_quant=CommonUintActQuant,
+                bit_width=8,
+                per_channel_broadcastable_shape=(1, 128, 1, 1),
+                scaling_per_channel=False,
+                return_quant_tensor=True),
+            QuantConv2d(
+                in_channels=128,
+                out_channels=8,
+                kernel_size=1,
+                bias=False,
+                weight_quant=CommonIntWeightPerChannelQuant,
+                weight_bit_width=8,
+                return_quant_tensor=True),
+            qnn.QuantIdentity(bit_width=8, return_quant_tensor=True)
+        )
+        #loc_layers += [qnn.QuantConv2d(128, 12, kernel_size=3, padding=1, weight_bit_width=8)]
+        self.loc_layer4 = nn.Sequential(
+            QuantConv2d(
+                in_channels=128,
+                out_channels=12,
+                kernel_size=3,
+                padding=1,
+                bias=False,
+                weight_quant=CommonIntWeightPerChannelQuant,
+                weight_bit_width=8,
+		        return_quant_tensor=True),
+            qnn.QuantIdentity(bit_width=8, return_quant_tensor=True)    
+        )
+
+        #self.conf_layer = nn.Sequential()
+        #conf_layers += [depth_conv2d(32, 6, kernel=3, pad=1)]
+        #conf_layers += [depth_conv2d(64, 4, kernel=3, pad=1)]
+        #conf_layers += [depth_conv2d(128, 4, kernel=3, pad=1)]
+        #conf_layers += [qnn.QuantConv2d(128, 6, kernel_size=3, padding=1, weight_bit_width=8)]
+        
+        
+        #self.landm_layer = nn.Sequential()
+        #landm_layers += [depth_conv2d(32, 30, kernel=3, pad=1)]
+        #landm_layers += [depth_conv2d(64, 20, kernel=3, pad=1)]
+        #landm_layers += [depth_conv2d(128, 20, kernel=3, pad=1)]
+        #landm_layers += [qnn.QuantConv2d(128, 30, kernel_size=3, padding=1, weight_bit_width=8)]
+
 
     def forward(self,inputs):
-        #x = self.quant_inp(inputs)
-        x = self.features(inputs)
-        x =self.final_pool(x)
-        x = x.view(x.size(0), -1)
-        output = self.output(x)
-        return output
+        s0 = self.quant_inp(inputs)
+        
+        s1 = self.stage1(s0)
+        s2 = self.stage2(s1)
+        s3 = self.stage3(s2)
+        s4 = self.stage4(s3)
 
+        q1 = self.quant_inp(s1)
+        q2 = self.quant_inp(s2)
+        q3 = self.quant_inp(s3)
+        q4 = self.quant_inp(s4)
+        
+        loc = list()
+        loc1 = self.loc_layer1(q1)
+        loc2 = self.loc_layer2(q2)
+        loc3 = self.loc_layer3(q3)
+        loc4 = self.loc_layer4(q4)
+
+        loc.append(loc1)
+        loc.append(loc2)
+        loc.append(loc3)
+        loc.append(loc4)
+
+        output = torch.cat([o.view(o.size(0), -1, 4)  for o in loc], 1)
+        return output
 
 model = Starter()
 model_for_export = "starter_qnn.pth"
+print(model)
 torch.save(model.state_dict(),model_for_export)
 
 ready_model_filename = "starter_qnn-ready.onnx"
-input_shape = (1, 1, 64, 64)
-
-bo.export_finn_onnx(model, input_shape, export_path=ready_model_filename)
-
+input_shape = (1, 1, 320, 320)
+bo.export_finn_onnx(model, input_shape, export_path=ready_model_filename,)
 print("Model saved to %s" % ready_model_filename)
